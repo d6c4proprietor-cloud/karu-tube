@@ -66,6 +66,7 @@ details p{margin:6px 0}
   <div id="stage"></div>
   <div class="row" id="controls" hidden>
     <button type="button" id="stop">停止して通信を止める</button>
+    <button type="button" id="pip" hidden>小窓で再生</button>
   </div>
 
   <h2>履歴</h2>
@@ -115,21 +116,26 @@ details p{margin:6px 0}
     frame.style.transform='scale('+(stage.clientWidth/frame.width)+')';
   }
 
-  function play(item){
-    current=item;
+  function makeFrame(item,doc){
     // 高精細ディスプレイでは実ピクセル数で画質が決まるので、その分だけ小さく読み込む
     var dpr=window.devicePixelRatio||1;
     var h=Math.max(90,Math.round(mode/dpr)), w=Math.round(h*16/9);
-    var src='https://www.youtube-nocookie.com/embed/'+
+    var f=doc.createElement('iframe');
+    f.width=w; f.height=h;
+    f.allow='autoplay; encrypted-media; picture-in-picture; fullscreen';
+    f.referrerPolicy='strict-origin-when-cross-origin';
+    f.title='YouTube プレーヤー';
+    f.src='https://www.youtube-nocookie.com/embed/'+
       (item.type==='list'?'videoseries?list='+item.id+'&':item.id+'?')+
       'autoplay=1&playsinline=1&rel=0&iv_load_policy=3';
+    return f;
+  }
+
+  function play(item){
+    closePip();
+    current=item;
     stage.textContent='';
-    frame=document.createElement('iframe');
-    frame.width=w; frame.height=h;
-    frame.allow='autoplay; encrypted-media; picture-in-picture; fullscreen';
-    frame.referrerPolicy='strict-origin-when-cross-origin';
-    frame.title='YouTube プレーヤー';
-    frame.src=src;
+    frame=makeFrame(item,document);
     stage.appendChild(frame);
     stage.style.display='block';
     controls.hidden=false;
@@ -138,9 +144,37 @@ details p{margin:6px 0}
   }
 
   function stop(){
+    closePip();
     stage.textContent=''; stage.style.display='none';
     controls.hidden=true; frame=null; current=null;
   }
+
+  // 小窓(常に手前に出る別ウィンドウ)で再生。Document Picture-in-Picture 対応ブラウザのみ
+  var pipWin=null, pipBtn=document.getElementById('pip');
+  function closePip(){ if(pipWin){ var w=pipWin; pipWin=null; w.close(); } }
+  function openPip(){
+    if(!current) return;
+    var item=current;
+    window.documentPictureInPicture.requestWindow({width:400,height:225}).then(function(win){
+      pipWin=win;
+      stage.textContent=''; stage.style.display='none'; frame=null;
+      var d=win.document, f=makeFrame(item,d);
+      d.body.style.cssText='margin:0;background:#000;overflow:hidden';
+      f.style.cssText='position:absolute;top:0;left:0;border:0;transform-origin:0 0';
+      d.body.appendChild(f);
+      function fitPip(){
+        var s=Math.min(win.innerWidth/f.width,win.innerHeight/f.height);
+        f.style.transform='translate('+(win.innerWidth-f.width*s)/2+'px,'+
+          (win.innerHeight-f.height*s)/2+'px) scale('+s+')';
+      }
+      win.addEventListener('resize',fitPip); fitPip();
+      // 小窓を閉じたら元の場所で再生を続ける
+      win.addEventListener('pagehide',function(){
+        if(pipWin===win){ pipWin=null; if(current) play(current); }
+      });
+    }).catch(function(){ msg.textContent='小窓を開けませんでした'; });
+  }
+  if('documentPictureInPicture' in window){ pipBtn.hidden=false; pipBtn.onclick=openPip; }
 
   function remember(item){
     var old=hist.filter(function(h){return h.id===item.id;})[0];
@@ -185,7 +219,7 @@ details p{margin:6px 0}
   modes.onclick=function(e){
     var b=e.target.closest('button'); if(!b) return;
     mode=+b.dataset.h; save(KEY_MODE,mode); renderModes();
-    if(current) play(current);
+    if(current&&!pipWin) play(current);
   };
   document.getElementById('form').onsubmit=function(e){
     e.preventDefault();
