@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="referrer" content="strict-origin-when-cross-origin">
+<link rel="preconnect" href="https://www.youtube-nocookie.com">
 <title>かるチューブ</title>
 <style>
 :root{
@@ -27,12 +28,10 @@ input[type=text]{flex:1;min-width:0;padding:12px;border:1px solid var(--line);bo
 button{font:inherit;border:1px solid var(--line);background:var(--panel);color:var(--text);
   border-radius:8px;padding:10px 14px;cursor:pointer}
 button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-text);font-weight:600}
-.modes{display:flex;gap:6px;margin:12px 0;flex-wrap:wrap}
-.modes button{flex:1;padding:8px 6px;font-size:13px;white-space:nowrap}
-.modes button[aria-pressed=true]{border-color:var(--accent);color:var(--accent);font-weight:600}
 #stage{position:relative;width:100%;aspect-ratio:16/9;background:#000;border-radius:8px;overflow:hidden;display:none}
-#stage iframe{position:absolute;top:0;left:0;border:0;transform-origin:0 0}
-#msg{color:var(--accent);font-size:13px;min-height:1.6em;margin:6px 0}
+#stage iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:0}
+#msg{color:var(--accent);font-size:13px;min-height:1.6em;margin:8px 0 6px}
+#status{color:var(--sub);font-size:13px;margin:6px 2px 0}
 .row{display:flex;gap:8px;margin-top:8px}
 .row button{font-size:13px;padding:6px 10px}
 h2{font-size:14px;margin:28px 0 6px;color:var(--sub);font-weight:600}
@@ -49,21 +48,16 @@ details p{margin:6px 0}
 <body>
 <main>
   <h1>かるチューブ</h1>
-  <p class="lead">通信制限中でも止まりにくい、低画質固定のYouTubeプレーヤー</p>
+  <p class="lead">サムネイルやコメントを読み込まない、動画だけのYouTubeプレーヤー</p>
 
   <form id="form">
     <input id="url" type="text" inputmode="url" autocomplete="off" placeholder="YouTubeのURLか動画IDを貼り付け">
     <button class="primary" type="submit">再生</button>
   </form>
 
-  <div class="modes" id="modes" role="group" aria-label="画質">
-    <button type="button" data-h="144">最軽量 144p</button>
-    <button type="button" data-h="240">軽量 240p</button>
-    <button type="button" data-h="360">標準 360p</button>
-  </div>
-
   <div id="msg" role="status"></div>
   <div id="stage"></div>
+  <div id="status" role="status"></div>
   <div class="row" id="controls" hidden>
     <button type="button" id="stop">停止して通信を止める</button>
     <button type="button" id="pip" hidden>小窓で再生</button>
@@ -74,24 +68,25 @@ details p{margin:6px 0}
 
   <details>
     <summary>しくみと注意</summary>
-    <p>YouTubeの公式埋め込みプレーヤーを小さいサイズで読み込み、画面上で拡大表示しています。プレーヤーは自分のサイズに合った画質を選ぶため、低画質に固定されデータ量が減ります。</p>
-    <p>サムネイル・おすすめ・コメントは読み込みません。再生ボタンを押すまで通信は発生しません。</p>
-    <p>目安: 144pは約0.1Mbps、240pは約0.3Mbps、360pは約0.5Mbps。128kbps制限では144pでも最初に読み込み待ちが出ます。</p>
+    <p>YouTubeの公式埋め込みプレーヤーだけを表示します。サムネイル・おすすめ・コメントは読み込まず、再生ボタンを押すまで通信は発生しません。</p>
+    <p>画質はYouTubeのプレーヤーが回線速度に合わせて自動で決めます。このサイトから画質を固定することはできません。手動で下げるには、プレーヤー右下の歯車 →「画質」→ 144p を選んでください。</p>
+    <p>144pでも映像と音声で約0.13Mbps必要です。128kbps制限では途切れずに流すことはできないので、一時停止して先読みをためてから再生してください。</p>
+    <p>プレーヤー本体の読み込みに時間がかかります。Wi-Fiのあるときに一度このサイトで何か再生しておくと、次回から本体の読み込みが省かれます。</p>
   </details>
 </main>
 
 <script>
 (function(){
-  var KEY_HIST='karu.history', KEY_MODE='karu.mode';
+  var KEY_HIST='karu.history';
   var stage=document.getElementById('stage'), msg=document.getElementById('msg');
   var controls=document.getElementById('controls'), histEl=document.getElementById('history');
-  var input=document.getElementById('url'), modes=document.getElementById('modes');
+  var input=document.getElementById('url');
   var frame=null, current=null;
 
   function load(k,d){ try{ var v=localStorage.getItem(k); return v?JSON.parse(v):d; }catch(e){ return d; } }
   function save(k,v){ try{ localStorage.setItem(k,JSON.stringify(v)); }catch(e){} }
 
-  var mode=load(KEY_MODE,144), hist=load(KEY_HIST,[]);
+  var hist=load(KEY_HIST,[]);
 
   // URL / ID → {type:'v'|'list', id}
   function parse(s){
@@ -111,23 +106,52 @@ details p{margin:6px 0}
     return null;
   }
 
-  function fit(){
-    if(!frame) return;
-    frame.style.transform='scale('+(stage.clientWidth/frame.width)+')';
+  // プレーヤーから状態(読み込み中・画質・先読み量)を受け取って表示する
+  var YT='https://www.youtube-nocookie.com', statusEl=document.getElementById('status');
+  var QN={tiny:'144p',small:'240p',medium:'360p',large:'480p',hd720:'720p',hd1080:'1080p'};
+  var active=null, info={}, ready=false, t0=0, tick=null;
+  function watch(f){
+    active=f; info={}; ready=false; t0=Date.now(); clearInterval(tick);
+    tick=setInterval(function(){
+      if(!ready&&f.contentWindow)
+        f.contentWindow.postMessage('{"event":"listening","id":1,"channel":"widget"}',YT);
+      renderStatus();
+    },1000);
+    renderStatus();
   }
+  function onPlayerMessage(e){
+    if(e.origin!==YT||!active||e.source!==active.contentWindow) return;
+    var d; try{ d=JSON.parse(e.data); }catch(err){ return; }
+    if(d&&d.info&&typeof d.info==='object') for(var k in d.info) info[k]=d.info[k];
+    ready=true; renderStatus();
+  }
+  function renderStatus(){
+    if(!active){ statusEl.textContent=''; return; }
+    if(!ready){
+      statusEl.textContent='プレーヤー本体を読み込み中… '+Math.round((Date.now()-t0)/1000)+
+        '秒(通信制限中は数分かかることがあります)';
+      return;
+    }
+    var st=info.playerState, t=
+      st===1?'再生中':st===2?'一時停止中(止めている間も先読みは進みます)':
+      st===3?'動画データを読み込み中…':st===0?'再生終了':
+      '準備完了(始まらないときは画面をタップ。広告中のこともあります)';
+    if(QN[info.playbackQuality]) t+=' ・画質 '+QN[info.playbackQuality];
+    if(info.videoLoadedFraction>0) t+=' ・先読み '+Math.round(info.videoLoadedFraction*100)+'%';
+    statusEl.textContent=t;
+  }
+  window.addEventListener('message',onPlayerMessage);
 
   function makeFrame(item,doc){
-    // 高精細ディスプレイでは実ピクセル数で画質が決まるので、その分だけ小さく読み込む
-    var dpr=window.devicePixelRatio||1;
-    var h=Math.max(90,Math.round(mode/dpr)), w=Math.round(h*16/9);
     var f=doc.createElement('iframe');
-    f.width=w; f.height=h;
     f.allow='autoplay; encrypted-media; picture-in-picture; fullscreen';
     f.referrerPolicy='strict-origin-when-cross-origin';
     f.title='YouTube プレーヤー';
     f.src='https://www.youtube-nocookie.com/embed/'+
       (item.type==='list'?'videoseries?list='+item.id+'&':item.id+'?')+
-      'autoplay=1&playsinline=1&rel=0&iv_load_policy=3';
+      'autoplay=1&playsinline=1&rel=0&iv_load_policy=3&enablejsapi=1&origin='+
+      encodeURIComponent(location.origin);
+    watch(f);
     return f;
   }
 
@@ -139,7 +163,6 @@ details p{margin:6px 0}
     stage.appendChild(frame);
     stage.style.display='block';
     controls.hidden=false;
-    fit();
     remember(item);
   }
 
@@ -147,6 +170,7 @@ details p{margin:6px 0}
     closePip();
     stage.textContent=''; stage.style.display='none';
     controls.hidden=true; frame=null; current=null;
+    active=null; clearInterval(tick); statusEl.textContent='';
   }
 
   // 小窓(常に手前に出る別ウィンドウ)で再生。Document Picture-in-Picture 対応ブラウザのみ
@@ -160,14 +184,9 @@ details p{margin:6px 0}
       stage.textContent=''; stage.style.display='none'; frame=null;
       var d=win.document, f=makeFrame(item,d);
       d.body.style.cssText='margin:0;background:#000;overflow:hidden';
-      f.style.cssText='position:absolute;top:0;left:0;border:0;transform-origin:0 0';
+      f.style.cssText='position:absolute;top:0;left:0;width:100%;height:100%;border:0';
       d.body.appendChild(f);
-      function fitPip(){
-        var s=Math.min(win.innerWidth/f.width,win.innerHeight/f.height);
-        f.style.transform='translate('+(win.innerWidth-f.width*s)/2+'px,'+
-          (win.innerHeight-f.height*s)/2+'px) scale('+s+')';
-      }
-      win.addEventListener('resize',fitPip); fitPip();
+      win.addEventListener('message',onPlayerMessage);
       // 小窓を閉じたら元の場所で再生を続ける
       win.addEventListener('pagehide',function(){
         if(pipWin===win){ pipWin=null; if(current) play(current); }
@@ -210,17 +229,6 @@ details p{margin:6px 0}
     });
   }
 
-  function renderModes(){
-    [].forEach.call(modes.children,function(b){
-      b.setAttribute('aria-pressed',String(+b.dataset.h===mode));
-    });
-  }
-
-  modes.onclick=function(e){
-    var b=e.target.closest('button'); if(!b) return;
-    mode=+b.dataset.h; save(KEY_MODE,mode); renderModes();
-    if(current&&!pipWin) play(current);
-  };
   document.getElementById('form').onsubmit=function(e){
     e.preventDefault();
     var item=parse(input.value);
@@ -228,12 +236,11 @@ details p{margin:6px 0}
     msg.textContent=''; input.value=''; input.blur(); play(item);
   };
   document.getElementById('stop').onclick=stop;
-  window.addEventListener('resize',fit);
 
   if(location.protocol==='file:')
     msg.textContent='ファイルを直接開くとYouTube側で再生エラーになります。http(s)で配信して開いてください。';
 
-  renderModes(); renderHist();
+  renderHist();
 })();
 </script>
 </body>
